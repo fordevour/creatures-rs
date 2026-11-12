@@ -17,6 +17,22 @@ impl Canvas {
         }
     }
 
+    /// Подгоняет холст под новый размер, сохраняя содержимое.
+    ///
+    /// Холст переиспользуется между кадрами, чтобы не выделять мегабайты
+    /// пикселей каждый раз.
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if self.width == width && self.height == height {
+            return;
+        }
+
+        let len = width as usize * height as usize;
+
+        self.pixels.resize(len, 0);
+        self.width = width;
+        self.height = height;
+    }
+
     /// Размер холста по ширине.
     pub fn width(&self) -> u32 {
         self.width
@@ -49,14 +65,20 @@ impl Canvas {
 
     /// Заливает прямоугольник цветом; части за пределами холста обрезаются.
     pub fn fill_rect(&mut self, x: i32, y: i32, width: u32, height: u32, color: u32) {
-        let x_end = (x + width as i32).min(self.width as i32);
-        let y_end = (y + height as i32).min(self.height as i32);
+        let x_start = x.max(0) as u32;
+        let y_start = y.max(0) as u32;
+        let x_end = (x + width as i32).min(self.width as i32).max(0) as u32;
+        let y_end = (y + height as i32).min(self.height as i32).max(0) as u32;
 
-        for py in y.max(0)..y_end {
+        if x_start >= x_end || y_start >= y_end {
+            return;
+        }
+
+        for py in y_start..y_end {
             let row = py as usize * self.width as usize;
-            for px in x.max(0)..x_end {
-                self.pixels[row + px as usize] = color;
-            }
+            let (from, to) = (row + x_start as usize, row + x_end as usize);
+
+            self.pixels[from..to].fill(color);
         }
     }
 

@@ -1,6 +1,6 @@
 //! Цвет клетки пространства: белый фон с наложенными оттенками полей.
 
-use crate::palette::{BACKGROUND, LIGHT_COLOR, MINERALS_COLOR, O2_COLOR};
+use crate::palette::{BACKGROUND, CELL_BORDER_FACTOR, LIGHT_COLOR, MINERALS_COLOR, O2_COLOR};
 use crate::space::Space;
 
 /// Цвет клетки по её координатам.
@@ -25,6 +25,19 @@ pub fn cell_color(space: &Space, x: usize, y: usize) -> u32 {
     let red = rgb[0].round() as u32;
     let green = rgb[1].round() as u32;
     let blue = rgb[2].round() as u32;
+
+    (red << 16) | (green << 8) | blue
+}
+
+/// Цвет рамки клетки: чуть темнее самой клетки.
+pub fn cell_border_color(color: u32) -> u32 {
+    let red = ((color >> 16) & 0xFF) as f32 * CELL_BORDER_FACTOR;
+    let green = ((color >> 8) & 0xFF) as f32 * CELL_BORDER_FACTOR;
+    let blue = (color & 0xFF) as f32 * CELL_BORDER_FACTOR;
+
+    let red = red.round() as u32;
+    let green = green.round() as u32;
+    let blue = blue.round() as u32;
 
     (red << 16) | (green << 8) | blue
 }

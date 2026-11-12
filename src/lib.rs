@@ -7,18 +7,20 @@
 //! - [`canvas`] — буфер пикселей и примитивы рисования;
 //! - [`palette`] — цвета полей;
 //! - [`cell_color`] — цвет клетки по значениям полей;
+//! - [`cell_colors`] — кэш цветов всех клеток;
 //! - [`render`] — отрисовка пространства в холст;
 //! - [`font`] — самописный шрифт 5x7;
 //! - [`text`] — вывод текста;
 //! - [`value`] — форматирование значений полей;
-//! - [`cursor`] — клетка под курсором;
+//! - [`camera`] — камера: масштаб, центр обзора и клетка под курсором;
 //! - [`panel`] — инфо-панель;
 //! - [`window`] — окно и цикл событий.
 
+pub mod camera;
 pub mod canvas;
 pub mod cell_color;
+pub mod cell_colors;
 pub mod constants;
-pub mod cursor;
 pub mod font;
 pub mod panel;
 pub mod palette;

@@ -2,8 +2,8 @@
 //!
 //! Панель рисуется в правом верхнем углу окна поверх пространства.
 
+use crate::camera::Camera;
 use crate::canvas::Canvas;
-use crate::cursor::cell_at;
 use crate::font::{text_height, text_width};
 use crate::space::Space;
 use crate::text::draw_text;
@@ -39,8 +39,8 @@ const TITLE: u32 = 0x8A4B08;
 /// Рисует панель в правом верхнем углу холста.
 ///
 /// `cursor` — позиция курсора в физических пикселях окна.
-pub fn draw(canvas: &mut Canvas, space: &Space, cursor: (f64, f64)) {
-    let (cell_x, cell_y) = cell_at(cursor);
+pub fn draw(canvas: &mut Canvas, space: &Space, camera: &Camera, cursor: (f64, f64)) {
+    let (cell_x, cell_y) = camera.cell_at(cursor, canvas.width(), canvas.height());
 
     let lines = [
         (format!("CELL {cell_x},{cell_y}"), TITLE),
@@ -96,6 +96,7 @@ pub fn draw(canvas: &mut Canvas, space: &Space, cursor: (f64, f64)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell_colors::CellColors;
     use crate::render::{WINDOW_SIZE, render};
     use crate::space_gradients;
 
@@ -103,10 +104,18 @@ mod tests {
     #[test]
     fn panel_is_drawn_in_top_right_corner() {
         let space = space_gradients::gradients();
-        let mut canvas = render(&space, WINDOW_SIZE, WINDOW_SIZE);
+        let camera = Camera::new();
+
+        let mut colors = CellColors::new();
+        colors.rebuild(&space);
+
+        let mut canvas = Canvas::new(WINDOW_SIZE, WINDOW_SIZE);
+
+        render(&camera, &colors, &mut canvas);
+
         let before = canvas.pixels().to_vec();
 
-        draw(&mut canvas, &space, (100.0, 200.0));
+        draw(&mut canvas, &space, &camera, (100.0, 200.0));
 
         let after = canvas.pixels();
         let side = WINDOW_SIZE as usize;
