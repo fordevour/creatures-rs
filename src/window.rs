@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
@@ -15,13 +15,26 @@ use winit::window::{Window, WindowId};
 use crate::camera::{Camera, MOVE_SPEED, ZOOM_STEP};
 use crate::canvas::Canvas;
 use crate::cell_colors::CellColors;
-use crate::panel;
-use crate::render::{WINDOW_SIZE, render};
+use crate::menu;
+use crate::menu_data::{CellInfo, MenuData};
+use crate::perf::Perf;
+use crate::constants::SPACE_SIZE;
+use crate::render::{PIXELS_PER_CELL, render};
 use crate::space::Space;
 use crate::space_gradients;
+use crate::viewport::Viewport;
 
 /// Заголовок окна.
 const WINDOW_TITLE: &str = "creatures-rs";
+
+/// Начальный размер зоны пространства в пикселях: пространство целиком.
+const SPACE_VIEW_SIZE: u32 = SPACE_SIZE as u32 * PIXELS_PER_CELL;
+
+/// Минимальная ширина зоны пространства: меньше уже не разглядеть.
+const MIN_SPACE_WIDTH: u32 = 96;
+
+/// Минимальная высота окна: столько нужно меню.
+const MIN_WINDOW_HEIGHT: u32 = 400;
 
 /// Длительность кадра анимации (60 кадров в секунду).
 const FRAME_TIME: Duration = Duration::from_millis(16);
@@ -50,8 +63,6 @@ struct SpaceApp {
     camera: Camera,
     /// Позиция курсора в окне (в физических пикселях), если он внутри.
     cursor: Option<(f64, f64)>,
-    /// Камера перетаскивается мышью.
-    dragging: bool,
     /// Удерживаемые клавиши управления камерой.
     pressed: HashSet<KeyCode>,
     /// Момент последнего кадра — нужен для скорости движения.
@@ -64,6 +75,14 @@ struct SpaceApp {
     colors: CellColors,
     /// Пространство изменилось: цвета пора пересчитать.
     space_changed: bool,
+    /// Счётчик кадров: FPS и время отрисовки.
+    perf: Perf,
+    /// Момент начала прошлой отрисовки — нужен для интервала между кадрами.
+    last_draw_start: Instant,
+    /// Тик симуляции.
+    tick: u64,
+    /// Живых клеток (пока ноль — симуляции ещё нет).
+    cells_alive: u64,
     /// Окно появляется только после события `Resumed`.
     state: Option<WindowState>,
 }
@@ -93,6 +112,52 @@ impl SpaceApp {
         }
     }
 
+    /// Зона окна, в которой рисуется пространство: всё, что левее меню.
+    fn viewport(&self) -> Viewport {
+        let (width, height) = self.window_size();
+
+        let space_width = width.saturating_sub(menu::WIDTH);
+
+        Viewport::new(0, 0, space_width, height)
+    }
+
+    /// Клетка под курсором — только если курсор над пространством.
+    fn cell_under_cursor(&self, viewport: &Viewport) -> Option<(usize, usize)> {
+        let cursor = self.cursor?;
+
+        if !viewport.contains(cursor.0, cursor.1) {
+            return None;
+        }
+
+        Some(self.camera.cell_at(cursor, viewport))
+    }
+
+    /// Данные для меню на текущий кадр.
+    fn menu_data(&self, viewport: &Viewport) -> MenuData {
+        let (min_x, max_x, min_y, max_y) = self.camera.visible_cells(viewport);
+
+        let cell = self.cell_under_cursor(viewport);
+
+        let cell = CellInfo {
+            cell,
+            o2: cell.map(|(x, y)| self.space.o2_at(x, y)),
+            light: cell.map(|(x, y)| self.space.light_at(x, y)),
+            minerals: cell.map(|(x, y)| self.space.minerals_at(x, y)),
+        };
+
+        MenuData {
+            cell,
+            zoom: self.camera.zoom(),
+            center: self.camera.center(),
+            view: (max_x - min_x + 1, max_y - min_y + 1),
+            pixels_per_cell: self.camera.pixels_per_cell() as u32,
+            fps: self.perf.fps(),
+            frame_time: self.perf.last_draw().as_secs_f32() * 1000.0,
+            tick: self.tick,
+            cells_alive: self.cells_alive,
+        }
+    }
+
     /// Место для будущей симуляции: правит пространство на месте.
     ///
     /// Сейчас пространство только заполняется градиентами при старте,
@@ -104,7 +169,7 @@ impl SpaceApp {
         // self.space_changed = true;
     }
 
-    /// Собирает кадр: пространство и инфо-панель поверх него.
+    /// Собирает кадр: пространство в зоне обзора и меню справа.
     fn frame(&mut self, width: u32, height: u32) {
         if self.space_changed {
             self.colors.rebuild(&self.space);
@@ -113,17 +178,25 @@ impl SpaceApp {
 
         self.frame.resize(width, height);
 
-        render(&self.camera, &self.colors, &mut self.frame);
+        let viewport = Viewport::new(0, 0, width.saturating_sub(menu::WIDTH), height);
 
-        // Инфо-панель рисуется только если курсор в окне.
-        if let Some(cursor) = self.cursor {
-            panel::draw(&mut self.frame, &self.space, &self.camera, cursor);
-        }
+        render(&self.camera, &self.colors, &mut self.frame, &viewport);
+
+        let data = self.menu_data(&viewport);
+        menu::draw(&mut self.frame, &data);
+
     }
 
     /// Рисует пространство и выводит кадр в окно.
     fn draw(&mut self) {
+        let started = Instant::now();
+
+        // Интервал с прошлым кадром: по нему считается настоящий FPS.
+        let interval = started.duration_since(self.last_draw_start);
+        self.last_draw_start = started;
+
         self.update();
+
 
         let size = {
             let Some(state) = &self.state else {
@@ -160,20 +233,21 @@ impl SpaceApp {
 
         let _ = buffer.present();
 
-        // Следующий кадр запрашиваем сразу после вывода: на Wayland именно так
-        // событие перерисовки доходит до приложения.
-        self.request_redraw();
+        self.perf.frame(interval, started.elapsed());
     }
 
     /// Приближает или отдаляет камеру вокруг точки курсора.
     fn zoom(&mut self, factor: f32) {
-        let (width, height) = self.window_size();
+        let viewport = self.viewport();
 
-        if width == 0 || height == 0 {
+        if viewport.width == 0 || viewport.height == 0 {
             return;
         }
 
-        self.camera.zoom_at(factor, self.cursor, width, height);
+        // Зум вокруг курсора — только если он над пространством.
+        let cursor = self.cursor.filter(|cursor| viewport.contains(cursor.0, cursor.1));
+
+        self.camera.zoom_at(factor, cursor, &viewport);
         self.request_redraw();
     }
 
@@ -219,7 +293,15 @@ impl ApplicationHandler for SpaceApp {
 
         let attributes = Window::default_attributes()
             .with_title(WINDOW_TITLE)
-            .with_inner_size(PhysicalSize::new(WINDOW_SIZE, WINDOW_SIZE));
+            .with_resizable(true)
+            .with_inner_size(PhysicalSize::new(
+                SPACE_VIEW_SIZE + menu::WIDTH,
+                SPACE_VIEW_SIZE,
+            ))
+            .with_min_inner_size(PhysicalSize::new(
+                MIN_SPACE_WIDTH + menu::WIDTH,
+                MIN_WINDOW_HEIGHT,
+            ));
 
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Rc::new(window),
@@ -268,28 +350,13 @@ impl ApplicationHandler for SpaceApp {
                 self.keep_animating(event_loop);
             }
 
-            // Зажатая левая кнопка мыши тянет камеру.
-            WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left {
-                    self.dragging = state == ElementState::Pressed;
-                }
-            }
-
             WindowEvent::CursorMoved { position, .. } => {
-                let previous = self.cursor;
                 self.cursor = Some((position.x, position.y));
-
-                if self.dragging && let Some((x, y)) = previous {
-                    // Содержимое едет за курсором, поэтому знак обратный.
-                    self.camera
-                        .pan(x as f32 - position.x as f32, y as f32 - position.y as f32);
-                }
                 self.request_redraw();
             }
 
             WindowEvent::CursorLeft { .. } => {
                 self.cursor = None;
-                self.dragging = false;
                 self.request_redraw();
             }
 
@@ -402,7 +469,6 @@ fn run_inner() -> Result<(), Box<dyn std::error::Error>> {
         space: space_gradients::gradients(),
         camera: Camera::new(),
         cursor: None,
-        dragging: false,
         pressed: HashSet::new(),
         last_frame: Instant::now(),
         next_frame: Instant::now(),
@@ -410,6 +476,10 @@ fn run_inner() -> Result<(), Box<dyn std::error::Error>> {
         colors: CellColors::new(),
         // Цвета считаются перед первым кадром.
         space_changed: true,
+        perf: Perf::new(),
+        last_draw_start: Instant::now(),
+        tick: 0,
+        cells_alive: 0,
         state: None,
     };
 

@@ -13,7 +13,11 @@
 //! - [`text`] — вывод текста;
 //! - [`value`] — форматирование значений полей;
 //! - [`camera`] — камера: масштаб, центр обзора и клетка под курсором;
-//! - [`panel`] — инфо-панель;
+//! - [`viewport`] — зона окна, в которой рисуется пространство;
+//! - [`perf`] — счётчик кадров и FPS;
+//! - [`rng`] — псевдослучайный генератор чисел;
+//! - [`menu_data`] — данные для меню;
+//! - [`menu`] — правая колонка меню;
 //! - [`window`] — окно и цикл событий.
 
 pub mod camera;
@@ -22,11 +26,15 @@ pub mod cell_color;
 pub mod cell_colors;
 pub mod constants;
 pub mod font;
-pub mod panel;
+pub mod menu;
+pub mod menu_data;
 pub mod palette;
+pub mod perf;
 pub mod render;
+pub mod rng;
 pub mod space;
 pub mod space_gradients;
 pub mod text;
 pub mod value;
+pub mod viewport;
 pub mod window;

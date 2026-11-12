@@ -2,6 +2,7 @@
 
 use crate::constants::SPACE_SIZE;
 use crate::render::PIXELS_PER_CELL;
+use crate::viewport::Viewport;
 
 /// Максимальный масштаб (во сколько раз клетка больше базовой).
 pub const MAX_ZOOM: f32 = 32.0;
@@ -85,9 +86,10 @@ impl Camera {
         self.center
     }
 
-    /// Минимальный масштаб: при нём всё пространство влезает в окно.
-    pub fn min_zoom(&self, width: u32, height: u32) -> f32 {
-        let fit = (width.min(height)) as f32 / (SPACE_SIZE as f32 * PIXELS_PER_CELL as f32);
+    /// Минимальный масштаб: при нём всё пространство влезает в зону обзора.
+    pub fn min_zoom(&self, viewport: &Viewport) -> f32 {
+        let fit = (viewport.width.min(viewport.height)) as f32
+            / (SPACE_SIZE as f32 * PIXELS_PER_CELL as f32);
 
         // Ниже нуля масштаб быть не может: клетка должна хоть что-то занимать.
         fit.clamp(MIN_ZOOM, 1.0)
@@ -97,21 +99,23 @@ impl Camera {
     ///
     /// `cx`/`cy` — координаты клетки в клетках пространства (дробные
     /// допустимы: так считаются границы).
-    pub fn cell_origin(&self, cx: f32, cy: f32, width: u32, height: u32) -> (i32, i32) {
+    pub fn cell_origin(&self, cx: f32, cy: f32, viewport: &Viewport) -> (i32, i32) {
         let ppc = self.pixels_per_cell();
 
-        let x = (cx - self.center.0) * ppc + width as f32 / 2.0;
-        let y = (cy - self.center.1) * ppc + height as f32 / 2.0;
+        let x = (cx - self.center.0) * ppc + viewport.x as f32 + viewport.width as f32 / 2.0;
+        let y = (cy - self.center.1) * ppc + viewport.y as f32 + viewport.height as f32 / 2.0;
 
         (x.round() as i32, y.round() as i32)
     }
 
     /// Клетка под точкой экрана.
-    pub fn cell_at(&self, cursor: (f64, f64), width: u32, height: u32) -> (usize, usize) {
+    pub fn cell_at(&self, cursor: (f64, f64), viewport: &Viewport) -> (usize, usize) {
         let ppc = self.pixels_per_cell();
 
-        let x = (cursor.0 as f32 - width as f32 / 2.0) / ppc + self.center.0;
-        let y = (cursor.1 as f32 - height as f32 / 2.0) / ppc + self.center.1;
+        let x = (cursor.0 as f32 - viewport.x as f32 - viewport.width as f32 / 2.0) / ppc
+            + self.center.0;
+        let y = (cursor.1 as f32 - viewport.y as f32 - viewport.height as f32 / 2.0) / ppc
+            + self.center.1;
 
         let x = (x.floor().max(0.0) as usize).min(SPACE_SIZE - 1);
         let y = (y.floor().max(0.0) as usize).min(SPACE_SIZE - 1);
@@ -120,9 +124,12 @@ impl Camera {
     }
 
     /// Диапазон видимых клеток (включительно).
-    pub fn visible_cells(&self, width: u32, height: u32) -> (usize, usize, usize, usize) {
-        let (min_x, min_y) = self.cell_at((0.0, 0.0), width, height);
-        let (max_x, max_y) = self.cell_at((width as f64 - 1.0, height as f64 - 1.0), width, height);
+    pub fn visible_cells(&self, viewport: &Viewport) -> (usize, usize, usize, usize) {
+        let (min_x, min_y) = self.cell_at((viewport.x as f64, viewport.y as f64), viewport);
+        let (max_x, max_y) = self.cell_at(
+            (viewport.right() as f64 - 1.0, viewport.bottom() as f64 - 1.0),
+            viewport,
+        );
 
         (min_x, max_x, min_y, max_y)
     }
@@ -130,8 +137,8 @@ impl Camera {
     /// Задаёт новый целевой масштаб, удерживая точку под курсором на месте.
     ///
     /// Сам масштаб меняется плавно — см. [`Camera::update`].
-    pub fn zoom_at(&mut self, factor: f32, cursor: Option<(f64, f64)>, width: u32, height: u32) {
-        let target = (self.target_zoom * factor).clamp(self.min_zoom(width, height), MAX_ZOOM);
+    pub fn zoom_at(&mut self, factor: f32, cursor: Option<(f64, f64)>, viewport: &Viewport) {
+        let target = (self.target_zoom * factor).clamp(self.min_zoom(viewport), MAX_ZOOM);
 
         if target == self.target_zoom {
             return;
@@ -145,15 +152,17 @@ impl Camera {
             Some((x, y)) => {
                 let ppc = self.pixels_per_cell();
 
+                let offset = (
+                    x as f32 - viewport.x as f32 - viewport.width as f32 / 2.0,
+                    y as f32 - viewport.y as f32 - viewport.height as f32 / 2.0,
+                );
+
                 Some(Anchor {
                     world: (
-                        (x as f32 - width as f32 / 2.0) / ppc + self.center.0,
-                        (y as f32 - height as f32 / 2.0) / ppc + self.center.1,
+                        offset.0 / ppc + self.center.0,
+                        offset.1 / ppc + self.center.1,
                     ),
-                    offset: (
-                        x as f32 - width as f32 / 2.0,
-                        y as f32 - height as f32 / 2.0,
-                    ),
+                    offset,
                 })
             }
             None => None,
@@ -225,13 +234,19 @@ impl Camera {
 mod tests {
     use super::*;
 
+    /// Зона обзора во весь кадр.
+    fn viewport() -> Viewport {
+        Viewport::new(0, 0, 1024, 1024)
+    }
+
     /// Точка экрана переводится в клетку пространства.
     #[test]
     fn cursor_maps_to_cell() {
         let camera = Camera::new();
+        let viewport = viewport();
 
-        assert_eq!(camera.cell_at((0.0, 0.0), 1024, 1024), (0, 0));
-        assert_eq!(camera.cell_at((100.0, 200.0), 1024, 1024), (25, 50));
+        assert_eq!(camera.cell_at((0.0, 0.0), &viewport), (0, 0));
+        assert_eq!(camera.cell_at((100.0, 200.0), &viewport), (25, 50));
     }
 
     /// При увеличении клетка под курсором остаётся на месте.
@@ -240,17 +255,19 @@ mod tests {
         let mut camera = Camera::new();
         let cursor = (500.0, 300.0);
 
-        let before = camera.cell_at(cursor, 1024, 1024);
+        let viewport = viewport();
 
-        camera.zoom_at(ZOOM_STEP, Some(cursor), 1024, 1024);
-        camera.zoom_at(ZOOM_STEP, Some(cursor), 1024, 1024);
+        let before = camera.cell_at(cursor, &viewport);
+
+        camera.zoom_at(ZOOM_STEP, Some(cursor), &viewport);
+        camera.zoom_at(ZOOM_STEP, Some(cursor), &viewport);
 
         // Ждём конца анимации зума.
         for _ in 0..200 {
             camera.update(1.0 / 60.0);
         }
 
-        assert_eq!(camera.cell_at(cursor, 1024, 1024), before);
+        assert_eq!(camera.cell_at(cursor, &viewport), before);
     }
 
     /// Масштаб не опускается ниже «видно всё пространство».
@@ -258,14 +275,16 @@ mod tests {
     fn zoom_is_limited() {
         let mut camera = Camera::new();
 
+        let viewport = viewport();
+
         for _ in 0..100 {
-            camera.zoom_at(1.0 / ZOOM_STEP, Some((0.0, 0.0)), 1024, 1024);
+            camera.zoom_at(1.0 / ZOOM_STEP, Some((0.0, 0.0)), &viewport);
         }
 
-        assert!(camera.target_zoom() >= camera.min_zoom(1024, 1024));
+        assert!(camera.target_zoom() >= camera.min_zoom(&viewport));
 
         for _ in 0..200 {
-            camera.zoom_at(ZOOM_STEP, Some((0.0, 0.0)), 1024, 1024);
+            camera.zoom_at(ZOOM_STEP, Some((0.0, 0.0)), &viewport);
         }
 
         assert!(camera.target_zoom() <= MAX_ZOOM);
@@ -276,7 +295,7 @@ mod tests {
     fn zoom_is_smooth() {
         let mut camera = Camera::new();
 
-        camera.zoom_at(ZOOM_STEP, Some((512.0, 512.0)), 1024, 1024);
+        camera.zoom_at(ZOOM_STEP, Some((512.0, 512.0)), &viewport());
 
         assert_ne!(camera.zoom(), camera.target_zoom());
 

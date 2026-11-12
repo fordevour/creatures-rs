@@ -7,16 +7,14 @@ use crate::camera::Camera;
 use crate::canvas::Canvas;
 use crate::cell_color::cell_border_color;
 use crate::cell_colors::CellColors;
-use crate::constants::{SPACE_SIZE, SPACE_SUB_SIZE};
+use crate::constants::SPACE_SUB_SIZE;
 use crate::palette::BACKGROUND_COLOR;
+use crate::viewport::Viewport;
 
 /// Пикселей в одной стороне клетки пространства.
 ///
 /// Суб-клетки укладываются квадратом: `SPACE_SUB_SIZE = 16` → `4 x 4`.
 pub const PIXELS_PER_CELL: u32 = 4;
-
-/// Размер окна в пикселях: пространство целиком, по `PIXELS_PER_CELL` на клетку.
-pub const WINDOW_SIZE: u32 = SPACE_SIZE as u32 * PIXELS_PER_CELL;
 
 /// Проверка, что суб-клетки действительно квадратные.
 const _: () = assert!(SPACE_SUB_SIZE == PIXELS_PER_CELL as usize * PIXELS_PER_CELL as usize);
@@ -26,23 +24,25 @@ const MIN_BORDER_CELL: f32 = 2.0;
 
 /// Рисует пространство в холст.
 ///
-/// Видно ту часть пространства, которую показывает камера. Холст
-/// переиспользуется между кадрами, поэтому его размер должен быть задан заранее.
-pub fn render(camera: &Camera, colors: &CellColors, canvas: &mut Canvas) {
-    let width = canvas.width();
-    let height = canvas.height();
-
+/// Видно ту часть пространства, которую показывает камера. Пространство
+/// занимает только зону обзора — справа от неё живёт меню.
+pub fn render(
+    camera: &Camera,
+    colors: &CellColors,
+    canvas: &mut Canvas,
+    viewport: &Viewport,
+) {
     canvas.fill(BACKGROUND_COLOR);
 
-    let (min_x, max_x, min_y, max_y) = camera.visible_cells(width, height);
+    let (min_x, max_x, min_y, max_y) = camera.visible_cells(viewport);
     let with_borders = camera.pixels_per_cell() >= MIN_BORDER_CELL;
 
     for cy in min_y..=max_y {
         for cx in min_x..=max_x {
             let color = colors.get(cx, cy);
 
-            let (x0, y0) = camera.cell_origin(cx as f32, cy as f32, width, height);
-            let (x1, y1) = camera.cell_origin(cx as f32 + 1.0, cy as f32 + 1.0, width, height);
+            let (x0, y0) = camera.cell_origin(cx as f32, cy as f32, viewport);
+            let (x1, y1) = camera.cell_origin(cx as f32 + 1.0, cy as f32 + 1.0, viewport);
 
             let cell_width = (x1 - x0).max(1) as u32;
             let cell_height = (y1 - y0).max(1) as u32;
@@ -66,33 +66,41 @@ mod tests {
     use super::*;
     use crate::space_gradients;
 
+    /// Сторона зоны обзора в тестах: пространство целиком.
+    const SIDE: u32 = 1024;
+
     /// Готовит кэш цветов и холст для теста.
-    fn scene() -> (Camera, CellColors, Canvas) {
+    fn scene() -> (Camera, CellColors, Canvas, Viewport) {
         let space = space_gradients::gradients();
         let mut colors = CellColors::new();
         colors.rebuild(&space);
 
-        (Camera::new(), colors, Canvas::new(WINDOW_SIZE, WINDOW_SIZE))
+        (
+            Camera::new(),
+            colors,
+            Canvas::new(SIDE, SIDE),
+            Viewport::new(0, 0, SIDE, SIDE),
+        )
     }
 
     /// Холст после отрисовки совпадает с размером окна.
     #[test]
     fn frame_has_window_size() {
-        let (camera, colors, mut canvas) = scene();
+        let (camera, colors, mut canvas, viewport) = scene();
 
-        render(&camera, &colors, &mut canvas);
+        render(&camera, &colors, &mut canvas, &viewport);
 
-        assert_eq!(canvas.pixels().len(), (WINDOW_SIZE * WINDOW_SIZE) as usize);
-        assert_eq!(canvas.width(), WINDOW_SIZE);
-        assert_eq!(canvas.height(), WINDOW_SIZE);
+        assert_eq!(canvas.pixels().len(), (SIDE * SIDE) as usize);
+        assert_eq!(canvas.width(), SIDE);
+        assert_eq!(canvas.height(), SIDE);
     }
 
     /// Клетка рисуется блоком `PIXELS_PER_CELL x PIXELS_PER_CELL` пикселей.
     #[test]
     fn cell_is_drawn_as_block() {
-        let (camera, colors, mut canvas) = scene();
+        let (camera, colors, mut canvas, viewport) = scene();
 
-        render(&camera, &colors, &mut canvas);
+        render(&camera, &colors, &mut canvas, &viewport);
 
         let pixels = canvas.pixels();
 
@@ -101,7 +109,7 @@ mod tests {
         assert_eq!(inside, pixels[2]);
 
         // ...а у далёкой клетки — другой.
-        let side = WINDOW_SIZE as usize;
+        let side = SIDE as usize;
         let far_cell = (side - 1) * side + (side - 1);
 
         assert_ne!(pixels[0], pixels[far_cell]);
@@ -110,12 +118,12 @@ mod tests {
     /// Градиенты отличают пространство от белого фона.
     #[test]
     fn gradients_are_visible() {
-        let (camera, colors, mut canvas) = scene();
+        let (camera, colors, mut canvas, viewport) = scene();
 
-        render(&camera, &colors, &mut canvas);
+        render(&camera, &colors, &mut canvas, &viewport);
 
         let pixels = canvas.pixels();
-        let side = WINDOW_SIZE as usize;
+        let side = SIDE as usize;
 
         // Свет гаснет слева направо: левый верхний угол != правый верхний.
         assert_ne!(pixels[0], pixels[side - 1]);
@@ -127,9 +135,9 @@ mod tests {
     /// По границам клеток проходит еле-видная рамка.
     #[test]
     fn cells_have_borders() {
-        let (camera, colors, mut canvas) = scene();
+        let (camera, colors, mut canvas, viewport) = scene();
 
-        render(&camera, &colors, &mut canvas);
+        render(&camera, &colors, &mut canvas, &viewport);
 
         let pixels = canvas.pixels();
 
